@@ -35,3 +35,14 @@ miniodata/
 *.swp
 .DS_Store
 Thumbs.db
+
+# --- Node / frontend build (also covered by frontend/.gitignore) ---
+node_modules/
+dist-ssr/
+*.local
+
+# --- Local runtime data (uploaded field-report media — recreated at runtime) ---
+backend/media/
+
+# --- Local agent / editor tooling (not part of the app) ---
+.claude/
