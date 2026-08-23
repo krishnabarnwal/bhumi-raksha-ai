@@ -1,0 +1,16 @@
+# Normalise line endings — checkout/commit as LF regardless of OS.
+# Fixes the "LF will be replaced by CRLF" warnings on Windows.
+* text=auto eol=lf
+
+# Explicit binary types (never normalise / diff as text)
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.tif binary
+*.tiff binary
+*.geotiff binary
+*.gpkg binary
+*.zip binary
