@@ -2,8 +2,9 @@
 
 Builds the app via a factory (``create_app``) so tests can construct isolated
 instances. Wires the health probes plus the Phase 2 demo APIs (risk, GIS
-layers, alerts, field reports, priorities) and CORS for the React/MapLibre
-dashboard, and serves uploaded field-report media as static files.
+layers, alerts, field reports, priorities) and the emergency-response SOS API,
+plus CORS for the React/MapLibre dashboard, and serves uploaded field-report
+media as static files.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from app.api.health import router as health_router
 from app.api.layers import router as layers_router
 from app.api.priorities import router as priorities_router
 from app.api.risk import router as risk_router
+from app.api.sos import router as sos_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -45,6 +47,7 @@ def create_app() -> FastAPI:
     app.include_router(alerts_router)
     app.include_router(field_reports_router)
     app.include_router(priorities_router)
+    app.include_router(sos_router)
 
     # Serve uploaded field-report photos. The directory is created on startup so
     # a fresh checkout (no uploads yet) does not fail to mount.

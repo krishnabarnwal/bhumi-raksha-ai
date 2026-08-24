@@ -13,11 +13,12 @@ never a guaranteed prediction (§5).
 
 from __future__ import annotations
 
-from sqlalchemy import select
+from geoalchemy2 import Geography
+from sqlalchemy import cast, func, select
 from sqlalchemy.orm import Session
 
 from app.models.base import RiskLevel
-from app.models.hazard import RiskPrediction
+from app.models.hazard import RiskPrediction, RiskZone
 from app.services.risk_engine import (
     RiskInputs,
     RiskResult,
@@ -89,3 +90,54 @@ def zone_result(db: Session, zone_id: int, override: float | None) -> RiskResult
     if override is not None:
         inputs.rainfall_mm_24h = override
     return compute_risk(inputs)
+
+
+# Beyond this distance a point is treated as outside the monitored demo region
+# (Sikkim only), so we never fabricate a risk level for far-away locations (§18).
+IN_REGION_MAX_KM = 25.0
+
+
+def zone_at_point(
+    db: Session, lon: float, lat: float, *, max_km: float = IN_REGION_MAX_KM
+) -> dict | None:
+    """Resolve a lon/lat to a risk zone: the zone that *contains* it, else the
+    nearest one. Returns ``{zone_id, zone_name, distance_km, in_region}`` (or
+    ``None`` if no zones exist). Callers pair this with :func:`zone_result` to get
+    the point's risk — the same single compute path used everywhere else.
+    """
+
+    point = func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326)
+
+    contained = db.execute(
+        select(RiskZone.id, RiskZone.name)
+        .where(RiskZone.geom.isnot(None))
+        .where(func.ST_Contains(RiskZone.geom, point))
+        .limit(1)
+    ).first()
+    if contained is not None:
+        return {
+            "zone_id": contained.id,
+            "zone_name": contained.name,
+            "distance_km": 0.0,
+            "in_region": True,
+        }
+
+    # Nearest-zone fallback. Cast to geography so the distance is in metres
+    # (planar degree distance would be meaningless for an in/out-of-region test).
+    dist_m = func.ST_Distance(cast(RiskZone.geom, Geography), cast(point, Geography))
+    nearest = db.execute(
+        select(RiskZone.id, RiskZone.name, dist_m.label("dist_m"))
+        .where(RiskZone.geom.isnot(None))
+        .order_by(dist_m)
+        .limit(1)
+    ).first()
+    if nearest is None:
+        return None
+
+    distance_km = round((nearest.dist_m or 0.0) / 1000.0, 1)
+    return {
+        "zone_id": nearest.id,
+        "zone_name": nearest.name,
+        "distance_km": distance_km,
+        "in_region": distance_km <= max_km,
+    }

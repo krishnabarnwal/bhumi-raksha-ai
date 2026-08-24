@@ -2,12 +2,17 @@
 import type {
   AlertsResponse,
   CreateFieldReport,
+  CreateSos,
   Feature,
   FeatureCollection,
   MediaUploadResult,
   PrioritiesResponse,
+  ResponseResourcesResponse,
+  RiskAtResult,
   RiskResult,
   Scenario,
+  SosCollection,
+  SosFeature,
 } from "./types";
 
 const RAW_BASE =
@@ -87,4 +92,22 @@ export const api = {
 
   // Absolute URL for a media path returned by the API (served by StaticFiles).
   mediaUrl: (path: string) => (path.startsWith("http") ? path : `${BASE}${path}`),
+
+  // --- emergency SOS (RISK → WARNING → SOS → PRIORITY → RESPONSE) ---
+  // Risk + citizen safety status at an arbitrary point (powers the alert).
+  riskAt: (lat: number, lon: number, scenario: Scenario = "current") => {
+    const s = scenario && scenario !== "current" ? `&scenario=${scenario}` : "";
+    return get<RiskAtResult>(`/api/risk-at?lat=${lat}&lon=${lon}${s}`);
+  },
+  // All SOS incidents as a GeoJSON FeatureCollection (live triage per feature).
+  sosList: (scenario: Scenario = "current") =>
+    get<SosCollection>(`/api/sos${scenarioQuery(scenario)}`),
+  // Raise a citizen SOS; idempotent on client_uuid so an offline re-sync is safe.
+  createSos: (payload: CreateSos) => postJSON<SosFeature>(`/api/sos`, payload),
+  // Command center assigns a team (omit teamId → assign the recommended one).
+  assignSos: (id: number, teamId?: string) =>
+    postJSON<SosFeature>(`/api/sos/${id}/assign`, teamId ? { team_id: teamId } : {}),
+  // The DEMO/SIMULATED response teams.
+  responseResources: () =>
+    get<ResponseResourcesResponse>(`/api/response-resources`),
 };

@@ -26,6 +26,13 @@ class FieldReportCategory(str, enum.Enum):
     slope_movement = "slope_movement"
     landslide = "landslide"
     other = "other"
+    # Emergency-response demo additions. ``sos`` is a citizen distress signal
+    # (see app/api/sos.py); ``flood`` is a citizen report *category* only — the
+    # risk engine stays landslide-focused. These are new enum *members*, not new
+    # columns: ``enum_column`` renders as VARCHAR(32) with no CHECK constraint,
+    # so the existing schema already accepts them — NO migration required.
+    sos = "sos"
+    flood = "flood"
 
 
 class FieldReportStatus(str, enum.Enum):
@@ -34,6 +41,10 @@ class FieldReportStatus(str, enum.Enum):
     verified = "verified"
     rejected = "rejected"
     resolved = "resolved"
+    # SOS lifecycle for the command-center triage view (PENDING → ASSIGNED).
+    # Migration-free for the same reason as the category additions above.
+    pending = "pending"
+    assigned = "assigned"
 
 
 class FieldReport(IDMixin, TimestampMixin, Base):

@@ -5,13 +5,18 @@ import RiskPanel from "./components/RiskPanel";
 import AlertsPanel from "./components/AlertsPanel";
 import PriorityList from "./components/PriorityList";
 import ReportForm from "./components/ReportForm";
+import SosPanel from "./components/SosPanel";
+import CitizenApp from "./components/CitizenApp";
 import { api } from "./api";
 import type {
   Alert,
+  Feature,
   FeatureCollection,
   Priority,
+  ResponseResource,
   RiskResult,
   Scenario,
+  SosCollection,
 } from "./types";
 import "./App.css";
 
@@ -22,7 +27,11 @@ const LEGEND: { label: string; color: string }[] = [
   { label: "CRITICAL", color: "#c62828" },
 ];
 
+type View = "command" | "citizen";
+
 export default function App() {
+  const [view, setView] = useState<View>("command");
+
   const [zones, setZones] = useState<FeatureCollection | null>(null);
   const [districts, setDistricts] = useState<FeatureCollection | null>(null);
   const [roads, setRoads] = useState<FeatureCollection | null>(null);
@@ -44,12 +53,21 @@ export default function App() {
   const [draftLocation, setDraftLocation] = useState<{ lat: number; lon: number } | null>(null);
   const nonce = useRef(0);
 
-  // Initial load — every layer + baseline alerts + priorities, in parallel.
+  // --- emergency SOS ---
+  const [sos, setSos] = useState<SosCollection | null>(null);
+  const [selectedSosId, setSelectedSosId] = useState<number | null>(null);
+  const [resources, setResources] = useState<ResponseResource[]>([]);
+  const [assigning, setAssigning] = useState(false);
+  // Read the live scenario inside the interval without re-arming it each change.
+  const scenarioRef = useRef(scenario);
+  scenarioRef.current = scenario;
+
+  // Initial load — every layer + baseline alerts + priorities + SOS, in parallel.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
-        const [z, d, r, v, i, inc, rep, al, pr] = await Promise.all([
+        const [z, d, r, v, i, inc, rep, al, pr, so, res] = await Promise.all([
           api.zones(),
           api.layer("districts"),
           api.layer("roads"),
@@ -59,6 +77,8 @@ export default function App() {
           api.fieldReports(),
           api.alerts(),
           api.priorities(),
+          api.sosList(),
+          api.responseResources(),
         ]);
         if (cancelled) return;
         setZones(z);
@@ -70,6 +90,8 @@ export default function App() {
         setReports(rep);
         setAlerts(al.alerts);
         setPriorities(pr.priorities);
+        setSos(so);
+        setResources(res.resources);
       } catch (e) {
         if (!cancelled) setError(errMsg(e));
       }
@@ -78,6 +100,29 @@ export default function App() {
       cancelled = true;
     };
   }, []);
+
+  // Live SOS feed — poll every 5s while the command center is open so a citizen
+  // SOS appears on the map without a manual refresh. Recomputed with the active
+  // rainfall scenario so priority/recommendation track current conditions.
+  useEffect(() => {
+    if (view !== "command") return;
+    const timer = setInterval(async () => {
+      try {
+        setSos(await api.sosList(scenarioRef.current));
+      } catch {
+        /* transient poll failure — keep the last good feed */
+      }
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [view]);
+
+  async function refreshSos() {
+    try {
+      setSos(await api.sosList(scenarioRef.current));
+    } catch (e) {
+      setError(errMsg(e));
+    }
+  }
 
   async function selectZone(id: number) {
     setSelectedZoneId(id);
@@ -99,17 +144,19 @@ export default function App() {
     setError(null);
     try {
       // Re-score every zone under the new scenario and pull the recoloured
-      // zones + refreshed warnings + re-ranked priorities; refresh the open
-      // panel too. One compute path on the backend keeps the map, alerts,
-      // priorities and panel in agreement.
-      const [z, al, pr] = await Promise.all([
+      // zones + refreshed warnings + re-ranked priorities + re-triaged SOS;
+      // refresh the open panel too. One compute path on the backend keeps the
+      // map, alerts, priorities, SOS and panel in agreement.
+      const [z, al, pr, so] = await Promise.all([
         api.zones(s),
         api.alerts(s),
         api.priorities(s),
+        api.sosList(s),
       ]);
       setZones(z);
       setAlerts(al.alerts);
       setPriorities(pr.priorities);
+      setSos(so);
       if (selectedZoneId != null) {
         setRisk(await api.zoneRisk(selectedZoneId, s));
       }
@@ -118,6 +165,28 @@ export default function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function selectSos(id: number) {
+    setSelectedSosId(id);
+  }
+
+  async function assignSos(id: number, teamId?: string) {
+    setAssigning(true);
+    setError(null);
+    try {
+      await api.assignSos(id, teamId);
+      await refreshSos(); // pull fresh triage so the panel shows ASSIGNED
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setAssigning(false);
+    }
+  }
+
+  function switchView(v: View) {
+    setView(v);
+    if (v === "command") refreshSos();
   }
 
   function pickLocation(lat: number, lon: number) {
@@ -135,6 +204,25 @@ export default function App() {
     }
   }
 
+  // The magenta "reports" layer shows ground-truth hazard reports only; SOS
+  // incidents (also stored as field reports) have their own priority layer.
+  const reportsView: FeatureCollection | null = reports
+    ? {
+        type: "FeatureCollection",
+        features: reports.features.filter((f) => f.properties?.category !== "sos"),
+      }
+    : null;
+
+  // SosCollection is structurally a FeatureCollection; the map reads id/priority
+  // from feature properties at runtime.
+  const sosGeo: FeatureCollection | null = sos
+    ? { type: "FeatureCollection", features: sos.features as unknown as Feature[] }
+    : null;
+
+  const selectedSos =
+    sos?.features.find((f) => f.properties.id === selectedSosId) ?? null;
+  const sosCount = sos?.count ?? 0;
+
   return (
     <div className="app">
       <header className="app-header">
@@ -144,69 +232,109 @@ export default function App() {
           </h1>
           <span className="tagline">Predict · Protect · Prevent</span>
         </div>
-        <div className="header-right">
-          <div className="legend">
-            {LEGEND.map((l) => (
-              <span className="legend-item" key={l.label}>
-                <span className="legend-dot" style={{ background: l.color }} />
-                {l.label}
-              </span>
-            ))}
+        <div className="header-center">
+          <div className="view-toggle">
+            <button
+              className={view === "command" ? "active" : ""}
+              onClick={() => switchView("command")}
+            >
+              Command Center
+            </button>
+            <button
+              className={view === "citizen" ? "active" : ""}
+              onClick={() => switchView("citizen")}
+            >
+              Citizen App
+            </button>
           </div>
+        </div>
+        <div className="header-right">
+          {view === "command" && (
+            <div className="legend">
+              {LEGEND.map((l) => (
+                <span className="legend-item" key={l.label}>
+                  <span className="legend-dot" style={{ background: l.color }} />
+                  {l.label}
+                </span>
+              ))}
+            </div>
+          )}
           <span className="badge-sim header-badge">DEMO / SIMULATED DATA</span>
         </div>
       </header>
 
       {error && <div className="error-banner">⚠ {error}</div>}
 
-      <div className="workspace">
-        <aside className="sidebar sidebar-left">
-          <ScenarioControl scenario={scenario} onChange={changeScenario} busy={busy} />
-          <AlertsPanel
-            alerts={alerts}
-            selectedZoneId={selectedZoneId}
-            onSelect={selectZone}
-          />
-          <PriorityList
-            items={priorities}
-            selectedZoneId={selectedZoneId}
-            onSelect={selectZone}
-          />
-        </aside>
+      {view === "citizen" ? (
+        <CitizenApp
+          scenario={scenario}
+          onSosCreated={() => refreshSos()}
+          onError={(msg) => setError(msg)}
+        />
+      ) : (
+        <div className="workspace">
+          <aside className="sidebar sidebar-left">
+            <ScenarioControl scenario={scenario} onChange={changeScenario} busy={busy} />
+            <AlertsPanel
+              alerts={alerts}
+              selectedZoneId={selectedZoneId}
+              onSelect={selectZone}
+            />
+            <PriorityList
+              items={priorities}
+              selectedZoneId={selectedZoneId}
+              onSelect={selectZone}
+            />
+          </aside>
 
-        <main className="map-wrap">
-          <MapView
-            zones={zones}
-            districts={districts}
-            roads={roads}
-            villages={villages}
-            infrastructure={infrastructure}
-            incidents={incidents}
-            reports={reports}
-            selectedZoneId={selectedZoneId}
-            focusRequest={focusRequest}
-            locating={locating}
-            draftLocation={draftLocation}
-            onSelectZone={selectZone}
-            onPickLocation={pickLocation}
-          />
-          {locating && (
-            <div className="map-hint">Click the map to set the report location</div>
-          )}
-        </main>
+          <main className="map-wrap">
+            <MapView
+              zones={zones}
+              districts={districts}
+              roads={roads}
+              villages={villages}
+              infrastructure={infrastructure}
+              incidents={incidents}
+              reports={reportsView}
+              sos={sosGeo}
+              selectedZoneId={selectedZoneId}
+              selectedSosId={selectedSosId}
+              focusRequest={focusRequest}
+              locating={locating}
+              draftLocation={draftLocation}
+              onSelectZone={selectZone}
+              onSelectSos={selectSos}
+              onPickLocation={pickLocation}
+            />
+            {locating && (
+              <div className="map-hint">Click the map to set the report location</div>
+            )}
+            {sosCount > 0 && (
+              <div className="sos-count-badge">
+                🚨 {sosCount} active SOS
+              </div>
+            )}
+          </main>
 
-        <aside className="sidebar sidebar-right">
-          <RiskPanel risk={risk} loading={riskLoading} />
-          <ReportForm
-            locating={locating}
-            draftLocation={draftLocation}
-            onStartLocating={() => setLocating(true)}
-            onCancelLocating={() => setLocating(false)}
-            onSubmitted={onReportSubmitted}
-            onError={(msg) => setError(msg)}
-          />
-        </aside>
-      </div>
+          <aside className="sidebar sidebar-right">
+            <SosPanel
+              sos={selectedSos}
+              resources={resources}
+              assigning={assigning}
+              onAssign={assignSos}
+            />
+            <RiskPanel risk={risk} loading={riskLoading} />
+            <ReportForm
+              locating={locating}
+              draftLocation={draftLocation}
+              onStartLocating={() => setLocating(true)}
+              onCancelLocating={() => setLocating(false)}
+              onSubmitted={onReportSubmitted}
+              onError={(msg) => setError(msg)}
+            />
+          </aside>
+        </div>
+      )}
     </div>
   );
 }

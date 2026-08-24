@@ -11,11 +11,14 @@ interface MapViewProps {
   infrastructure: FeatureCollection | null;
   incidents: FeatureCollection | null;
   reports: FeatureCollection | null;
+  sos: FeatureCollection | null;
   selectedZoneId: number | null;
+  selectedSosId: number | null;
   focusRequest: { id: number; nonce: number } | null;
   locating: boolean;
   draftLocation: { lat: number; lon: number } | null;
   onSelectZone: (id: number) => void;
+  onSelectSos: (id: number) => void;
   onPickLocation: (lat: number, lon: number) => void;
 }
 
@@ -85,6 +88,8 @@ export default function MapView(props: MapViewProps) {
   // Keep the latest click handler without re-binding the map listener.
   const onSelectRef = useRef(props.onSelectZone);
   onSelectRef.current = props.onSelectZone;
+  const onSelectSosRef = useRef(props.onSelectSos);
+  onSelectSosRef.current = props.onSelectSos;
   const onPickRef = useRef(props.onPickLocation);
   onPickRef.current = props.onPickLocation;
   // Whether the map is in "pick a report location" mode (read inside handlers).
@@ -111,7 +116,7 @@ export default function MapView(props: MapViewProps) {
     map.on("load", () => {
       const src = (id: string) =>
         map.addSource(id, { type: "geojson", data: EMPTY });
-      ["districts", "zones", "roads", "incidents", "infrastructure", "villages", "reports", "draft"].forEach(src);
+      ["districts", "zones", "roads", "incidents", "infrastructure", "villages", "reports", "sos", "draft"].forEach(src);
 
       map.addLayer({
         id: "districts-outline",
@@ -239,12 +244,86 @@ export default function MapView(props: MapViewProps) {
         },
       });
 
+      // Emergency SOS incidents — the most prominent markers, coloured by AI
+      // priority (P1 red → P4 green) and drawn on top of every other layer.
+      map.addLayer({
+        id: "sos-halo",
+        type: "circle",
+        source: "sos",
+        paint: {
+          "circle-radius": 17,
+          "circle-color": [
+            "match",
+            ["get", "priority"],
+            "P1", "#c62828",
+            "P2", "#ef6c00",
+            "P3", "#f9a825",
+            "P4", "#2e7d32",
+            "#607d8b",
+          ],
+          "circle-opacity": 0.22,
+        },
+      });
+      map.addLayer({
+        id: "sos-selected",
+        type: "circle",
+        source: "sos",
+        filter: ["==", ["get", "id"], -1],
+        paint: {
+          "circle-radius": 13,
+          "circle-color": "rgba(0,0,0,0)",
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 3,
+        },
+      });
+      map.addLayer({
+        id: "sos-circle",
+        type: "circle",
+        source: "sos",
+        paint: {
+          "circle-radius": 9,
+          "circle-color": [
+            "match",
+            ["get", "priority"],
+            "P1", "#c62828",
+            "P2", "#ef6c00",
+            "P3", "#f9a825",
+            "P4", "#2e7d32",
+            "#607d8b",
+          ],
+          "circle-stroke-color": "#ffffff",
+          "circle-stroke-width": 2.5,
+        },
+      });
+      map.addLayer({
+        id: "sos-label",
+        type: "symbol",
+        source: "sos",
+        layout: {
+          "text-field": ["get", "priority"],
+          "text-size": 11,
+          "text-offset": [0, -1.5],
+          "text-anchor": "bottom",
+        },
+        paint: {
+          "text-color": "#ffffff",
+          "text-halo-color": "#000000",
+          "text-halo-width": 1.4,
+        },
+      });
+
       // Click / hover on zones (suppressed while picking a report location).
       map.on("click", "zones-fill", (e) => {
         if (locatingRef.current) return;
         const f = e.features?.[0];
         const id = f?.properties?.id;
         if (id != null) onSelectRef.current(Number(id));
+      });
+      // SOS markers take click priority over the zone fill beneath them.
+      map.on("click", "sos-circle", (e) => {
+        if (locatingRef.current) return;
+        const id = e.features?.[0]?.properties?.id;
+        if (id != null) onSelectSosRef.current(Number(id));
       });
       // Any click while in locating mode drops the report pin there.
       map.on("click", (e) => {
@@ -259,6 +338,8 @@ export default function MapView(props: MapViewProps) {
       };
       map.on("mouseenter", "zones-fill", pointer);
       map.on("mouseleave", "zones-fill", clear);
+      map.on("mouseenter", "sos-circle", pointer);
+      map.on("mouseleave", "sos-circle", clear);
 
       readyRef.current = true;
       // Push any data that arrived before load.
@@ -291,6 +372,7 @@ export default function MapView(props: MapViewProps) {
     set("infrastructure", p.infrastructure);
     set("villages", p.villages);
     set("reports", p.reports);
+    set("sos", p.sos);
   }
 
   useEffect(() => {
@@ -304,6 +386,7 @@ export default function MapView(props: MapViewProps) {
     props.infrastructure,
     props.incidents,
     props.reports,
+    props.sos,
   ]);
 
   // --- selected highlight -------------------------------------------------
@@ -318,6 +401,19 @@ export default function MapView(props: MapViewProps) {
       ]);
     }
   }, [props.selectedZoneId]);
+
+  // --- selected SOS highlight ---------------------------------------------
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !readyRef.current) return;
+    if (map.getLayer("sos-selected")) {
+      map.setFilter("sos-selected", [
+        "==",
+        ["get", "id"],
+        props.selectedSosId ?? -1,
+      ]);
+    }
+  }, [props.selectedSosId]);
 
   // --- fly to a zone on request ------------------------------------------
   useEffect(() => {
