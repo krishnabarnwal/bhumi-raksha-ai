@@ -36,6 +36,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.db import get_db
@@ -292,15 +293,28 @@ def list_sos(
 def create_sos(payload: SosIn, db: Session = Depends(get_db)) -> dict:
     """Raise a citizen SOS; returns the incident as a GeoJSON Feature with triage.
 
-    Idempotent on ``client_uuid`` so an offline client can safely re-sync.
+    **Idempotent on ``client_uuid``** so an offline client can safely re-sync a
+    queued SOS any number of times without creating duplicate incidents. This is
+    enforced on the server, not trusted from the client, at two layers:
+
+    1. a pre-insert lookup that returns the existing incident on a repeat, and
+    2. the ``field_reports.client_uuid`` **unique constraint** as the source of
+       truth — if two syncs of the same SOS race past the lookup, the second
+       ``INSERT`` raises :class:`IntegrityError`; we roll back and return the
+       row the winner created. Same event id in, same incident out — never a
+       500, never a duplicate.
     """
 
-    if payload.client_uuid:
-        existing = db.execute(
+    def _existing_id() -> int | None:
+        if not payload.client_uuid:
+            return None
+        return db.execute(
             select(FieldReport.id).where(FieldReport.client_uuid == payload.client_uuid)
         ).scalar_one_or_none()
-        if existing is not None:
-            return _feature_by_id(db, existing, None)  # type: ignore[return-value]
+
+    existing = _existing_id()
+    if existing is not None:
+        return _feature_by_id(db, existing, None)  # type: ignore[return-value]
 
     attrs = SosAttrs(
         people_affected=payload.people_affected or 0,
@@ -331,7 +345,17 @@ def create_sos(payload: SosIn, db: Session = Depends(get_db)) -> dict:
         geom=func.ST_SetSRID(func.ST_MakePoint(payload.lon, payload.lat), 4326),
     )
     db.add(report)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        # A concurrent sync of the same client_uuid won the race and the unique
+        # constraint rejected this insert. Return the incident that now exists
+        # so the retry stays idempotent.
+        db.rollback()
+        existing = _existing_id()
+        if existing is not None:
+            return _feature_by_id(db, existing, None)  # type: ignore[return-value]
+        raise
     db.refresh(report)
     return _feature_by_id(db, report.id, None)  # type: ignore[return-value]
 

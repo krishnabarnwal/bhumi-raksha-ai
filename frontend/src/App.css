@@ -896,6 +896,82 @@ textarea.field-input {
   font-size: 13px;
 }
 
+/* F9 — connectivity status + offline SOS queue */
+.conn-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  border: 1px solid var(--border);
+}
+.conn-status .conn-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex: none;
+}
+.conn-status.online {
+  background: rgba(46, 125, 50, 0.12);
+  border-color: rgba(56, 209, 90, 0.4);
+  color: #a8e6b6;
+}
+.conn-status.online .conn-dot {
+  background: #38d15a;
+  box-shadow: 0 0 0 3px rgba(56, 209, 90, 0.22);
+}
+.conn-status.offline {
+  background: rgba(239, 108, 0, 0.14);
+  border-color: rgba(249, 168, 37, 0.5);
+  color: #ffcf99;
+}
+.conn-status.offline .conn-dot {
+  background: #f9a825;
+  box-shadow: 0 0 0 3px rgba(249, 168, 37, 0.22);
+}
+
+/* queued (offline-saved) SOS confirmation */
+.sos-confirm-queued {
+  border-left-color: #f9a825;
+}
+.sos-confirm-badge.queued {
+  background: #ef6c00;
+}
+.sos-queued-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: #ffcf99;
+}
+.sos-queued-status .sos-queued-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #f9a825;
+  animation: sos-queued-pulse 1.4s ease-in-out infinite;
+}
+@keyframes sos-queued-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+.hazard-offline-note {
+  margin-top: 8px;
+  font-size: 11.5px;
+  color: var(--text-dim);
+  line-height: 1.4;
+}
+
 /* hazard reporting */
 .hazard-grid {
   display: grid;
@@ -919,6 +995,14 @@ textarea.field-input {
 .hazard-btn:hover {
   border-color: var(--accent);
   background: #16344c;
+}
+.hazard-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.hazard-btn:disabled:hover {
+  border-color: var(--border);
+  background: var(--bg-panel-2);
 }
 .hazard-icon {
   font-size: 20px;

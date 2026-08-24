@@ -6,6 +6,8 @@ import type {
   Scenario,
   SosFeature,
 } from "../types";
+import { useOfflineSos } from "../hooks/useOfflineSos";
+import type { QueuedSos } from "../offline/sosOutbox";
 
 interface CitizenAppProps {
   // Shared with the command center so a rainfall scenario set there also drives
@@ -40,14 +42,28 @@ const SAFETY_ICON: Record<string, string> = {
   unknown: "❓",
 };
 
-function newUuid(): string | undefined {
-  return typeof crypto !== "undefined" && "randomUUID" in crypto
-    ? crypto.randomUUID()
-    : undefined;
+function newUuid(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) {
+    return crypto.randomUUID();
+  }
+  // Fallback for older/insecure contexts — still unique enough to dedupe on.
+  return `sos-${Date.now()}-${Math.round(Math.random() * 1e9)}`;
 }
+
+// Confirmation after pressing SOS: either delivered to the command center now,
+// or saved to the offline outbox to be synced automatically on reconnect.
+type SosConfirm =
+  | { kind: "sent"; feature: SosFeature }
+  | { kind: "queued"; item: QueuedSos };
 
 export default function CitizenApp(props: CitizenAppProps) {
   const { scenario } = props;
+  // F9 — offline-first SOS. The hook owns online/offline state, the IndexedDB
+  // outbox and auto-sync; a queued SOS is delivered exactly once on reconnect
+  // (idempotent on client_uuid, enforced server-side).
+  const { online, queuedCount, submit } = useOfflineSos({
+    onSynced: props.onSosCreated,
+  });
   const [loc, setLoc] = useState(PRESETS[0]);
   const [risk, setRisk] = useState<RiskAtResult | null>(null);
   const [riskLoading, setRiskLoading] = useState(false);
@@ -60,13 +76,19 @@ export default function CitizenApp(props: CitizenAppProps) {
   const [description, setDescription] = useState("");
 
   const [submitting, setSubmitting] = useState(false);
-  const [sosConfirm, setSosConfirm] = useState<SosFeature | null>(null);
+  const [confirm, setConfirm] = useState<SosConfirm | null>(null);
   const [hazardMsg, setHazardMsg] = useState<string | null>(null);
 
   // Re-fetch the citizen's risk whenever the simulated location or the shared
   // rainfall scenario changes. A stale-guard keeps the latest response winning.
   const reqRef = useRef(0);
   useEffect(() => {
+    if (!online) {
+      // Offline: keep the last known safety status on screen rather than
+      // erroring out. The connection status line already explains the state.
+      setRiskLoading(false);
+      return;
+    }
     const seq = ++reqRef.current;
     setRiskLoading(true);
     (async () => {
@@ -75,19 +97,23 @@ export default function CitizenApp(props: CitizenAppProps) {
         if (seq === reqRef.current) setRisk(r);
       } catch (e) {
         if (seq === reqRef.current) {
-          props.onError(e instanceof Error ? e.message : String(e));
-          setRisk(null);
+          // Only surface an error if we still believe we're online; a network
+          // blip is already accounted for by the offline status line.
+          if (typeof navigator === "undefined" || navigator.onLine) {
+            props.onError(e instanceof Error ? e.message : String(e));
+            setRisk(null);
+          }
         }
       } finally {
         if (seq === reqRef.current) setRiskLoading(false);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loc, scenario]);
+  }, [loc, scenario, online]);
 
   function chooseLocation(preset: (typeof PRESETS)[number]) {
     setLoc(preset);
-    setSosConfirm(null);
+    setConfirm(null);
     setHazardMsg(null);
   }
 
@@ -97,7 +123,7 @@ export default function CitizenApp(props: CitizenAppProps) {
     setHazardMsg(null);
     try {
       const peopleNum = people.trim() === "" ? undefined : Math.max(0, Number(people));
-      const feature = await api.createSos({
+      const result = await submit({
         lat: loc.lat,
         lon: loc.lon,
         people_affected: Number.isFinite(peopleNum as number) ? peopleNum : undefined,
@@ -106,8 +132,14 @@ export default function CitizenApp(props: CitizenAppProps) {
         description: description.trim() || undefined,
         client_uuid: newUuid(),
       });
-      setSosConfirm(feature);
-      props.onSosCreated(feature);
+      if (result.status === "sent") {
+        setConfirm({ kind: "sent", feature: result.feature });
+        props.onSosCreated(result.feature);
+      } else {
+        // Saved offline. It syncs automatically on reconnect; the hook's
+        // onSynced then notifies the command center — we don't call it here.
+        setConfirm({ kind: "queued", item: result.item });
+      }
     } catch (e) {
       props.onError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -137,6 +169,26 @@ export default function CitizenApp(props: CitizenAppProps) {
   return (
     <div className="citizen-view">
       <div className="citizen-shell">
+        {/* F9 — connectivity + offline SOS queue status (always visible) */}
+        <div
+          className={`conn-status ${online ? "online" : "offline"}`}
+          role="status"
+        >
+          <span className="conn-dot" />
+          {online ? (
+            queuedCount > 0 ? (
+              <span>Online — syncing {queuedCount} saved SOS…</span>
+            ) : (
+              <span>Online — connected to command center</span>
+            )
+          ) : (
+            <span>
+              Offline — you can still send an SOS
+              {queuedCount > 0 ? ` · ${queuedCount} queued` : ""}
+            </span>
+          )}
+        </div>
+
         {/* F8 — Demo Location Simulator */}
         <div className="panel citizen-loc">
           <div className="panel-title">
@@ -202,21 +254,48 @@ export default function CitizenApp(props: CitizenAppProps) {
         </div>
 
         {/* F1 — the SOS centerpiece */}
-        {sosConfirm ? (
+        {confirm?.kind === "sent" ? (
           <div className="panel sos-confirm">
             <div className="sos-confirm-badge">SOS SENT</div>
             <div className="sos-confirm-id">
-              Incident #{sosConfirm.properties.id} ·{" "}
+              Incident #{confirm.feature.properties.id} ·{" "}
               <span className="sos-confirm-priority">
-                {sosConfirm.properties.priority}
+                {confirm.feature.properties.priority}
               </span>
             </div>
             <div className="sos-confirm-body">
               Your emergency signal has reached the command center and is being
               triaged. Stay where you are if it is safe to do so.
             </div>
-            <button className="sos-again" onClick={() => setSosConfirm(null)}>
+            <button className="sos-again" onClick={() => setConfirm(null)}>
               Send another update
+            </button>
+          </div>
+        ) : confirm?.kind === "queued" ? (
+          <div className="panel sos-confirm sos-confirm-queued">
+            <div
+              className={`sos-confirm-badge ${queuedCount === 0 ? "" : "queued"}`}
+            >
+              {queuedCount === 0 ? "SOS DELIVERED" : "SOS SAVED — QUEUED"}
+            </div>
+            {queuedCount === 0 ? (
+              <div className="sos-confirm-body">
+                Your queued SOS has been delivered to the command center now that
+                the connection is back. Responders are being coordinated.
+              </div>
+            ) : (
+              <>
+                <div className="sos-confirm-body">
+                  SOS saved. It will be sent automatically when connection returns.
+                </div>
+                <div className="sos-queued-status">
+                  <span className="sos-queued-dot" />
+                  {queuedCount} SOS waiting to sync
+                </div>
+              </>
+            )}
+            <button className="sos-again" onClick={() => setConfirm(null)}>
+              {queuedCount === 0 ? "Send another update" : "Add another SOS"}
             </button>
           </div>
         ) : (
@@ -297,12 +376,18 @@ export default function CitizenApp(props: CitizenAppProps) {
                 key={h.category}
                 className="hazard-btn"
                 onClick={() => reportHazard(h.category, h.label)}
+                disabled={!online}
               >
                 <span className="hazard-icon">{h.icon}</span>
                 <span className="hazard-label">{h.label}</span>
               </button>
             ))}
           </div>
+          {!online && (
+            <div className="hazard-offline-note">
+              Hazard reports need a connection. Your SOS still works offline.
+            </div>
+          )}
           {hazardMsg && <div className="report-ok">✓ {hazardMsg}</div>}
         </div>
       </div>
