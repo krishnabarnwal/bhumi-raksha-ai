@@ -102,35 +102,47 @@ No platform is currently committed in the repo, so pick the fastest reliable opt
 - **Backend:** Render **Web Service** from `backend/Dockerfile` (or Python env), start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, health-check path `/health/ready`.
 - **Frontend:** Render **Static Site**, build `npm ci && npm run build`, publish `frontend/dist`.
 
-Illustrative `render.yaml` (shown here rather than committed, to avoid locking the repo to one platform):
+A ready-to-use [`render.yaml`](../render.yaml) blueprint is committed at the repo root — in Render, **New → Blueprint → connect this repo → Apply**. It provisions the database, backend (self-migrating + self-seeding on boot), and static frontend. Outline:
 
 ```yaml
+databases:
+  - name: bhumi-raksha-db
+    databaseName: bhumi_raksha
+    postgresMajorVersion: "16"
+    plan: free
+    region: singapore
+
 services:
   - type: web
     name: bhumi-raksha-api
-    env: docker
-    dockerfilePath: backend/Dockerfile
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
     dockerContext: .
+    plan: free
+    region: singapore
     healthCheckPath: /health/ready
+    # migrate + seed (idempotent) then serve — no shell needed on free tier
+    dockerCommand: 'sh -c "alembic upgrade head && python -m app.seed.seed_sikkim && python -m app.seed.demo_incidents && uvicorn app.main:app --host 0.0.0.0 --port $PORT"'
     envVars:
       - key: DATABASE_URL
         fromDatabase: { name: bhumi-raksha-db, property: connectionString }
       - key: CORS_ORIGINS
         value: '["https://bhumi-raksha-web.onrender.com"]'
+      - key: WEATHER_PROVIDER
+        value: mock
   - type: web
     name: bhumi-raksha-web
-    env: static
-    buildCommand: npm ci && npm run build
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
     staticPublishPath: frontend/dist
     envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
       - key: VITE_API_BASE
         value: https://bhumi-raksha-api.onrender.com
-databases:
-  - name: bhumi-raksha-db
-    postgresMajorVersion: "16"
 ```
 
-> The `DATABASE_URL` Render injects is a bare `postgresql://…`; the app auto-rewrites it to `postgresql+psycopg://…`, so no manual editing is required.
+> The `DATABASE_URL` Render injects is a bare `postgresql://…`; the app auto-rewrites it to `postgresql+psycopg://…`, so no manual editing is required. If Render can't grant the predicted `*.onrender.com` names, fix `CORS_ORIGINS` (backend) and `VITE_API_BASE` (frontend, then redeploy) to the actual URLs after the first deploy.
 
 ### Option B — Railway (backend + Postgres) + Vercel/Netlify (frontend)
 Deploy the backend and a Postgres plugin on Railway; build the frontend on Vercel/Netlify with `VITE_API_BASE` pointing at the Railway backend. Enable PostGIS on the Railway Postgres (the migration handles the extension).

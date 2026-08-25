@@ -1,0 +1,61 @@
+# Bhumi-Raksha AI — Render Blueprint (SIH 2026, Problem Statement 26001)
+#
+# One-click deploy of all three services directly from GitHub:
+#   1. Managed PostgreSQL 16  (PostGIS enabled by the migration's CREATE EXTENSION)
+#   2. FastAPI backend (Docker) — self-migrates + seeds idempotently on boot
+#   3. Static React/Vite frontend
+#
+# HOW TO USE: Render Dashboard -> New -> Blueprint -> connect this repo -> Apply.
+#
+# CROSS-SERVICE URLS: the two URLs below assume Render grants the predicted
+# onrender.com subdomains. If a name is already taken globally, Render appends a
+# suffix; after the first deploy, set the ACTUAL URLs and redeploy:
+#   - backend  CORS_ORIGINS  = ["<actual frontend URL>"]
+#   - frontend VITE_API_BASE =  <actual backend URL>   (build-time -> redeploy)
+# See docs/02-deployment.md sections 11-12.
+#
+# All served data is DEMO / SIMULATED and labeled as such (rules 5/9/11/18).
+# The external response network is a SIMULATED FUTURE INTEGRATION — no real
+# agency is ever contacted.
+
+databases:
+  - name: bhumi-raksha-db
+    databaseName: bhumi_raksha
+    postgresMajorVersion: "16"
+    plan: free
+    region: singapore
+
+services:
+  # --- Backend: FastAPI on uvicorn (Docker) ---
+  - type: web
+    name: bhumi-raksha-api
+    runtime: docker
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    plan: free
+    region: singapore
+    healthCheckPath: /health/ready
+    # Migrate + seed (both idempotent) then serve. Keeps the Dockerfile pristine
+    # and needs no shell / pre-deploy step, so it works on the free tier.
+    dockerCommand: 'sh -c "alembic upgrade head && python -m app.seed.seed_sikkim && python -m app.seed.demo_incidents && uvicorn app.main:app --host 0.0.0.0 --port $PORT"'
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: bhumi-raksha-db
+          property: connectionString
+      - key: CORS_ORIGINS
+        value: '["https://bhumi-raksha-web.onrender.com"]'
+      - key: WEATHER_PROVIDER
+        value: mock
+
+  # --- Frontend: static React/Vite build ---
+  - type: web
+    name: bhumi-raksha-web
+    runtime: static
+    buildCommand: cd frontend && npm ci && npm run build
+    staticPublishPath: frontend/dist
+    envVars:
+      - key: NODE_VERSION
+        value: 22.12.0
+      - key: VITE_API_BASE
+        value: https://bhumi-raksha-api.onrender.com
