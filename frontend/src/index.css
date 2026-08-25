@@ -6,6 +6,8 @@
   --text: #e8f0f8;
   --text-dim: #9fb4c8;
   --accent: #26c6da;
+  /* neutral "selected/active" elevated surface (flips with the theme) */
+  --surface-active: #16344c;
   --green: #2e7d32;
   --yellow: #f9a825;
   --orange: #ef6c00;
@@ -15,6 +17,24 @@
   font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
   color: var(--text);
   background: var(--bg);
+}
+
+/* Light theme — overrides only the neutral surface/text/border variables.
+   Semantic risk & status colours (green/yellow/orange/red and the status
+   chips) stay constant across themes, and the MapLibre basemap keeps its own
+   dark style regardless of theme. Attribute is set pre-paint by an inline
+   script in index.html and kept in sync by the React ThemeProvider. */
+:root[data-theme="light"] {
+  --bg: #e9eef3;
+  --bg-panel: #ffffff;
+  --bg-panel-2: #eef3f8;
+  --border: #cbd6e2;
+  --text: #12293f;
+  --text-dim: #51637a;
+  --accent: #0b7285;
+  --surface-active: #d6e4f5;
+
+  color-scheme: light;
 }
 
 * {

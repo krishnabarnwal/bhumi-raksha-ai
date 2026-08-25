@@ -1,4 +1,5 @@
 import type { Priority } from "../types";
+import { useT } from "../i18n";
 
 interface PriorityListProps {
   items: Priority[];
@@ -16,16 +17,17 @@ const TIER_COLOR: Record<string, string> = {
 
 export default function PriorityList(props: PriorityListProps) {
   const { items } = props;
+  const { t } = useT();
   return (
     <div className="panel">
       <div className="panel-title">
-        Response Priority
-        <span className="hint">risk × exposure</span>
+        {t("priority.title")}
+        <span className="hint">{t("priority.hint")}</span>
         {items.length > 0 && <span className="count-pill">{items.length}</span>}
       </div>
 
       {items.length === 0 ? (
-        <div className="empty">No zones to prioritize yet.</div>
+        <div className="empty">{t("priority.empty")}</div>
       ) : (
         <ol className="priority-list">
           {items.map((p) => (
@@ -45,8 +47,11 @@ export default function PriorityList(props: PriorityListProps) {
                 <span className="priority-body">
                   <span className="priority-zone">{p.zone}</span>
                   <span className="priority-meta">
-                    {p.display_level} · score {p.risk_score} ·{" "}
-                    {p.population_affected.toLocaleString()} exposed
+                    {p.display_level} ·{" "}
+                    {t("priority.scoreExposed", {
+                      score: p.risk_score,
+                      n: p.population_affected.toLocaleString(),
+                    })}
                   </span>
                 </span>
                 <span className="priority-index" style={{ color: p.color }}>
@@ -57,9 +62,7 @@ export default function PriorityList(props: PriorityListProps) {
           ))}
         </ol>
       )}
-      <div className="disclaimer">
-        DEMO / SIMULATED prioritization — decision support, not a guaranteed prediction.
-      </div>
+      <div className="disclaimer">{t("priority.disclaimer")}</div>
     </div>
   );
 }

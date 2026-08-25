@@ -20,6 +20,10 @@ COPY backend/alembic.ini ./alembic.ini
 
 EXPOSE 8000
 
-# Migrations are applied explicitly (see README), e.g.:
+# Migrations are applied explicitly (see README / docs/02-deployment.md), e.g.:
 #   docker compose ... exec api alembic upgrade head
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# The server honours $PORT when the platform injects one (Render, Railway,
+# Cloud Run, …), defaulting to 8000 for local / docker-compose use. compose
+# overrides this CMD with its own `command:`, so it is unaffected.
+CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]

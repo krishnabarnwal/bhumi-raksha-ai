@@ -30,9 +30,19 @@ docker compose -f infra/docker-compose.yml up -d db minio
 # Backend: apply schema, load the Sikkim demo data (idempotent — safe to re-run), serve the API.
 cd backend
 alembic upgrade head
-python -m app.seed.seed_sikkim
+python -m app.seed.seed_sikkim          # risk geography (districts, zones, roads, villages, infra)
+python -m app.seed.demo_incidents       # SOS/command-center board (idempotent — safe to re-run)
 uvicorn app.main:app          # NOTE: no --reload for the demo (see 1.3)
 ```
+
+> **Staging the SOS / command-center board.** `seed_sikkim` owns the risk *geography*; `demo_incidents` stages a clean, predictable set of **DEMO/SIMULATED** SOS + hazard incidents so the CITIZEN → SOS → PRIORITY → RESPONSE → LIFECYCLE story is visible the moment the command center loads (one CRITICAL unassigned SOS, one acknowledged, one en-route, one resolved-with-timeline, one HIGH hazard report). Every row is synthetic — tagged `demo-incident-*`, prefixed `[DEMO]`, and served with `is_simulated: true`; nothing claims a real NDRF/SDRF/108/NGO/government dispatch. To reset between rehearsals:
+>
+> ```bash
+> # From backend/ — clears ONLY the seeded demo incidents, then reseeds (surgical, safe).
+> python -m app.seed.demo_incidents --reset
+> ```
+>
+> `--reset` removes only the rows this script created (matched by their `demo-incident-*` id), so it can never delete a real citizen submission made during the demo. Use `--purge` instead for a louder, explicit one-time cleanup of *all* accumulated test reports (it prints the ids it deletes). Both are **local CLI actions only** — there is deliberately no public "delete all incidents" endpoint.
 
 ```bash
 # Frontend (separate terminal): the SPA on :5173.
@@ -142,7 +152,7 @@ These aren't legal boilerplate; saying them **builds credibility**, because most
 | A zone click did nothing | Clicked a gap between polygons | Click clearly **inside** a colored zone (or use the warning/priority list, which selects the same zone). |
 | Field-report submit is disabled | No location picked yet | Click **📍 Pick on map**, then click the map — the button enables once coordinates show. |
 | Field report location vanished mid-entry | A source file was saved → hot reload | Don't edit files during the demo. Re-pick the location and submit; it works in one continuous flow. |
-| Everything looks wrong / stale | API or seed issue | Re-check `http://localhost:8000/health/ready` = `db:ok`; if data is missing, re-run `python -m app.seed.seed_sikkim` (idempotent). |
+| Everything looks wrong / stale | API or seed issue | Re-check `http://localhost:8000/health/ready` = `db:ok`; if risk data is missing, re-run `python -m app.seed.seed_sikkim` (idempotent). If the SOS board looks messy, `python -m app.seed.demo_incidents --reset` restores the clean five-incident board. |
 
 **Panic reset:** reload `http://localhost:5173` — the app reloads to the clean Current-scenario state in ~1s with no data loss (reports are persisted server-side).
 

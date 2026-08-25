@@ -1,4 +1,5 @@
 import type { Alert } from "../types";
+import { useT } from "../i18n";
 
 interface Props {
   alerts: Alert[];
@@ -12,14 +13,15 @@ const LEVEL_COLOR: Record<string, string> = {
 };
 
 export default function AlertsPanel({ alerts, selectedZoneId, onSelect }: Props) {
+  const { t } = useT();
   return (
     <div className="panel alerts-panel">
       <div className="panel-title">
-        Early warnings
+        {t("alerts.title")}
         <span className="count-pill">{alerts.length}</span>
       </div>
       {alerts.length === 0 ? (
-        <div className="empty">No HIGH or CRITICAL zones in this scenario.</div>
+        <div className="empty">{t("alerts.empty")}</div>
       ) : (
         <div className="alert-list">
           {alerts.map((a) => {

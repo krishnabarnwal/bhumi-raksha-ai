@@ -201,12 +201,84 @@ export interface Recommendation {
   is_simulated: boolean;
 }
 
-// The team the command center has assigned (after POST /api/sos/{id}/assign).
+// --- response routing & escalation (DEMO / SIMULATED) ---
+// How far an incident is escalated: P1 reaches the national network, P2 the
+// state agencies, P3/P4 stay district/local.
+export type EscalationLevel = "NATIONAL" | "STATE" | "DISTRICT";
+
+export interface ResponseCategoryRef {
+  key: string;
+  label: string;
+}
+
+export interface SupportingCategory {
+  key: string;
+  label: string;
+  network: string;
+}
+
+// Recommended response category + escalation network, computed on read from the
+// incident's triage. Advice only — persists nothing. All SIMULATED.
+export interface ResponseRouting {
+  primary_category: ResponseCategoryRef;
+  escalation_network: string;
+  escalation_level: EscalationLevel;
+  escalation_level_label: string;
+  providers: string[];
+  supporting: SupportingCategory[];
+  reason: string;
+  is_simulated: boolean;
+}
+
+// The simulated acknowledgement from the dispatcher — NO real agency is called.
+export interface DispatchAck {
+  accepted: boolean;
+  reference: string;
+  dispatcher: string;
+  network: string;
+  is_simulated: boolean;
+  note: string;
+}
+
+// A recorded escalation (after POST /api/sos/{id}/escalate); null until escalated.
+export interface Escalation {
+  status: "ESCALATED";
+  escalated_at: string;
+  priority: SosPriority;
+  escalation_level: EscalationLevel;
+  escalation_level_label: string;
+  escalation_network: string;
+  primary_category: ResponseCategoryRef;
+  providers: string[];
+  supporting: SupportingCategory[];
+  reason: string;
+  dispatch: DispatchAck;
+  is_simulated: boolean;
+  note?: string;
+}
+
+// The responder status lifecycle, once a team is assigned. Forward-only:
+// ASSIGNED → ACKNOWLEDGED → EN_ROUTE → ON_SITE → RESOLVED.
+export type ResponderStatus =
+  | "ASSIGNED"
+  | "ACKNOWLEDGED"
+  | "EN_ROUTE"
+  | "ON_SITE"
+  | "RESOLVED";
+
+// The team the command center has assigned (after POST /api/sos/{id}/assign),
+// plus its responder-lifecycle state. The lifecycle fields are optional so a
+// pre-lifecycle assignment (assigned before this feature) still parses.
 export interface Assignment {
   team_id: string;
   team_name: string;
   kind: string;
   assigned_at: string;
+  status?: ResponderStatus;
+  acknowledged_at?: string;
+  en_route_at?: string;
+  on_site_at?: string;
+  resolved_at?: string;
 }
 
 // Properties on every SOS GeoJSON feature (GET/POST /api/sos).
@@ -229,6 +301,8 @@ export interface SosProperties {
   needs: Capability[];
   risk: SosRisk | null;
   recommendation: Recommendation | null;
+  response_routing: ResponseRouting;
+  escalation: Escalation | null;
   assignment: Assignment | null;
   lat: number;
   lon: number;

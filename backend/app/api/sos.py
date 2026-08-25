@@ -33,7 +33,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 from app.core.db import get_db
 from app.models.field import FieldReport, FieldReportCategory, FieldReportStatus
 from app.services.geojson import make_feature, make_feature_collection
+from app.services.response_dispatch import get_dispatcher
 from app.services.response_resources import (
     all_resources,
     available_resources,
@@ -100,6 +101,39 @@ class AssignIn(BaseModel):
     """Assign a team to an SOS. If ``team_id`` is omitted the recommended team is used."""
 
     team_id: str | None = Field(None, max_length=40)
+
+
+# --- responder status lifecycle ------------------------------------------
+#
+# Once a team is assigned, the incident walks a deterministic, forward-only
+# lifecycle. The state lives inside the existing ``assignment`` JSONB (no new
+# table, no migration): ``assignment["status"]`` plus one server-stamped
+# timestamp per transition. The DB row's ``status`` stays ``assigned`` the whole
+# time — the lifecycle is a property of the assignment, not the incident record.
+
+RESPONDER_FLOW = ["ASSIGNED", "ACKNOWLEDGED", "EN_ROUTE", "ON_SITE", "RESOLVED"]
+# The single legal successor of each state (forward-only, no skips).
+_NEXT_STATUS = {a: b for a, b in zip(RESPONDER_FLOW, RESPONDER_FLOW[1:])}
+# Where each transition records its server-generated timestamp.
+_STATUS_TS_FIELD = {
+    "ACKNOWLEDGED": "acknowledged_at",
+    "EN_ROUTE": "en_route_at",
+    "ON_SITE": "on_site_at",
+    "RESOLVED": "resolved_at",
+}
+
+
+class StatusIn(BaseModel):
+    """Advance an assigned incident to the next responder status."""
+
+    status: str = Field(..., max_length=32, description="target responder status")
+
+
+class EscalateIn(BaseModel):
+    """Escalate an incident to the wider response network (command-center action)."""
+
+    note: str | None = Field(None, max_length=500)
+
 
 
 # --- shared compute + feature builder ------------------------------------
@@ -166,6 +200,13 @@ def _build_sos_feature(db: Session, row, override: float | None) -> dict:
     computed = _compute_triage(db, lat, lon, attrs, override)
     triage = computed["triage"]
     assignment = cv.get("assignment")
+    # Response routing is advice computed on read (persists nothing); the
+    # escalation record, if any, is the operator's recorded hand-off.
+    response_routing = get_dispatcher().recommend(
+        priority=triage["priority"],
+        needs=triage["needs"],
+        display_level=computed["display_level"],
+    )
 
     props = {
         "id": row["id"],
@@ -186,6 +227,8 @@ def _build_sos_feature(db: Session, row, override: float | None) -> dict:
         "needs": triage["needs"],
         "risk": computed["risk"],
         "recommendation": computed["recommendation"],
+        "response_routing": response_routing,
+        "escalation": cv.get("escalation"),
         "assignment": assignment,
         "lat": lat,
         "lon": lon,
@@ -388,10 +431,142 @@ def assign_sos(report_id: int, payload: AssignIn, db: Session = Depends(get_db))
         "team_id": team.id,
         "team_name": team.name,
         "kind": team.kind,
+        "status": "ASSIGNED",  # entry point of the responder lifecycle
         "assigned_at": datetime.now(timezone.utc).isoformat(),
     }
     report.cv_classification = cv
     report.status = FieldReportStatus.assigned
+    db.commit()
+
+    return _feature_by_id(db, report_id, None)  # type: ignore[return-value]
+
+
+@router.patch("/sos/{report_id}/status")
+def update_sos_status(
+    report_id: int,
+    payload: StatusIn,
+    x_responder_id: str | None = Header(None, alias="X-Responder-Id"),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Advance an assigned incident along the responder lifecycle.
+
+    The state machine is **forward-only and deterministic**:
+    ``ASSIGNED → ACKNOWLEDGED → EN_ROUTE → ON_SITE → RESOLVED``. Only the single
+    legal next transition is accepted; backwards moves, skips, repeats of the
+    current state and unknown states are all rejected. Every transition is
+    stamped with a **server-generated** timestamp — client-supplied times are
+    never trusted.
+
+    Authorization is demo-grade (§5 — not production auth): the ``X-Responder-Id``
+    header must equal the ``team_id`` this incident was assigned to, so one
+    responder cannot advance another's incident (IDOR protection).
+    """
+
+    report = db.get(FieldReport, report_id)
+    if report is None or report.category != FieldReportCategory.sos:
+        raise HTTPException(status_code=404, detail="SOS incident not found")
+
+    # The lifecycle only exists once a team is assigned.
+    assignment = dict((report.cv_classification or {}).get("assignment") or {})
+    if not assignment:
+        raise HTTPException(status_code=409, detail="Incident has no assigned team yet")
+
+    # Demo-grade authorization: the caller must be the assigned responder.
+    if not x_responder_id:
+        raise HTTPException(status_code=401, detail="Responder identity required (X-Responder-Id)")
+    if x_responder_id != assignment.get("team_id"):
+        raise HTTPException(status_code=403, detail="Not the responder assigned to this incident")
+
+    target = (payload.status or "").strip().upper()
+    if target not in RESPONDER_FLOW:
+        raise HTTPException(status_code=422, detail=f"Unknown responder status '{payload.status}'")
+
+    # Missing/legacy assignments (pre-lifecycle) are treated as ASSIGNED.
+    current = (assignment.get("status") or "ASSIGNED").upper()
+    if _NEXT_STATUS.get(current) != target:
+        # Rejects backwards moves, skips, repeats of the current state, and any
+        # move out of the terminal RESOLVED state — one consistent 409.
+        raise HTTPException(
+            status_code=409, detail=f"Invalid transition {current} → {target}"
+        )
+
+    # Server-generated timestamp — never trust the client's clock.
+    assignment["status"] = target
+    assignment[_STATUS_TS_FIELD[target]] = datetime.now(timezone.utc).isoformat()
+
+    # Reassign a fresh dict so SQLAlchemy tracks the JSONB change.
+    cv = dict(report.cv_classification or {})
+    cv["assignment"] = assignment
+    report.cv_classification = cv
+    db.commit()
+
+    return _feature_by_id(db, report_id, None)  # type: ignore[return-value]
+
+
+@router.post("/sos/{report_id}/escalate")
+def escalate_sos(
+    report_id: int,
+    payload: EscalateIn | None = Body(default=None),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Escalate an SOS to the recommended response network (DEMO / SIMULATED).
+
+    The command center hands a high-severity incident to the wider response
+    network. The response **category, network and providers are recomputed on the
+    server** from the incident's current triage — the client cannot choose or
+    fake them (§5) — and the escalation is recorded additively under a new
+    ``cv_classification["escalation"]`` namespace (no new table, no migration),
+    parallel to ``assignment``. The dispatch itself is **simulated**: no real
+    NDRF / 108 / NGO API is contacted (§9, §18).
+
+    Idempotent: escalating an already-escalated incident returns it unchanged, so
+    the original ``escalated_at`` and dispatch reference are preserved and a
+    repeated click is a safe no-op.
+    """
+
+    report = db.get(FieldReport, report_id)
+    if report is None or report.category != FieldReportCategory.sos:
+        raise HTTPException(status_code=404, detail="SOS incident not found")
+
+    cv = dict(report.cv_classification or {})
+    if cv.get("escalation"):
+        return _feature_by_id(db, report_id, None)  # type: ignore[return-value]
+
+    # Recompute the routing recommendation server-side (never trust the client).
+    lon = db.execute(select(func.ST_X(FieldReport.geom)).where(FieldReport.id == report_id)).scalar()
+    lat = db.execute(select(func.ST_Y(FieldReport.geom)).where(FieldReport.id == report_id)).scalar()
+    attrs = _attrs_from_cv(report.cv_classification)
+    computed = _compute_triage(db, lat, lon, attrs, None)
+    triage = computed["triage"]
+
+    dispatcher = get_dispatcher()
+    recommendation = dispatcher.recommend(
+        priority=triage["priority"],
+        needs=triage["needs"],
+        display_level=computed["display_level"],
+    )
+    acknowledgement = dispatcher.dispatch(incident_id=report_id, recommendation=recommendation)
+
+    escalation = {
+        "status": "ESCALATED",
+        "escalated_at": datetime.now(timezone.utc).isoformat(),
+        "priority": triage["priority"],
+        "escalation_level": recommendation["escalation_level"],
+        "escalation_level_label": recommendation["escalation_level_label"],
+        "escalation_network": recommendation["escalation_network"],
+        "primary_category": recommendation["primary_category"],
+        "providers": recommendation["providers"],
+        "supporting": recommendation["supporting"],
+        "reason": recommendation["reason"],
+        "dispatch": acknowledgement,
+        "is_simulated": True,
+    }
+    if payload and payload.note:
+        escalation["note"] = payload.note
+
+    # Reassign a fresh dict so SQLAlchemy tracks the JSONB change.
+    cv["escalation"] = escalation
+    report.cv_classification = cv
     db.commit()
 
     return _feature_by_id(db, report_id, None)  # type: ignore[return-value]

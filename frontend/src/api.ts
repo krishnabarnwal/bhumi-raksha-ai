@@ -7,6 +7,7 @@ import type {
   FeatureCollection,
   MediaUploadResult,
   PrioritiesResponse,
+  ResponderStatus,
   ResponseResourcesResponse,
   RiskAtResult,
   RiskResult,
@@ -62,6 +63,20 @@ async function postForm<T>(path: string, form: FormData): Promise<T> {
   return (await res.json()) as T;
 }
 
+async function patchJSON<T>(
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<T> {
+  const res = await fetch(`${BASE}${path}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json", ...headers },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) throw new Error(await errorDetail(res, path));
+  return (await res.json()) as T;
+}
+
 const scenarioQuery = (scenario: Scenario) =>
   scenario && scenario !== "current" ? `?scenario=${scenario}` : "";
 
@@ -107,6 +122,17 @@ export const api = {
   // Command center assigns a team (omit teamId → assign the recommended one).
   assignSos: (id: number, teamId?: string) =>
     postJSON<SosFeature>(`/api/sos/${id}/assign`, teamId ? { team_id: teamId } : {}),
+  // Advance an assigned incident along the responder lifecycle. The responder
+  // identity (the assigned team_id) is sent as X-Responder-Id — the server
+  // rejects anyone else (demo-grade IDOR protection) and generates the
+  // transition timestamp itself.
+  updateSosStatus: (id: number, status: ResponderStatus, responderId: string) =>
+    patchJSON<SosFeature>(`/api/sos/${id}/status`, { status }, { "X-Responder-Id": responderId }),
+  // Escalate an incident to the recommended response network. The category and
+  // network are recomputed server-side; the dispatch is DEMO/SIMULATED (no real
+  // NDRF/108/NGO API). Idempotent — a repeat click is a safe no-op.
+  escalateSos: (id: number, note?: string) =>
+    postJSON<SosFeature>(`/api/sos/${id}/escalate`, note ? { note } : {}),
   // The DEMO/SIMULATED response teams.
   responseResources: () =>
     get<ResponseResourcesResponse>(`/api/response-resources`),

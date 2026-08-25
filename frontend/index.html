@@ -5,6 +5,26 @@
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>frontend</title>
+    <script>
+      // Set the theme before first paint to avoid a flash of the wrong palette.
+      // Mirrors src/theme/theme.ts (persisted choice → OS preference → dark).
+      // The React ThemeProvider keeps this <html data-theme> in sync afterwards.
+      (function () {
+        try {
+          var t = localStorage.getItem("bhumi.theme");
+          if (t !== "dark" && t !== "light") {
+            t =
+              window.matchMedia &&
+              window.matchMedia("(prefers-color-scheme: light)").matches
+                ? "light"
+                : "dark";
+          }
+          document.documentElement.setAttribute("data-theme", t);
+        } catch (e) {
+          /* ignore — CSS defaults to dark */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

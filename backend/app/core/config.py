@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,6 +36,28 @@ class Settings(BaseSettings):
     # readiness probe fast when the database is unreachable).
     DB_CONNECT_TIMEOUT: int = 5
 
+    @field_validator("DATABASE_URL", mode="after")
+    @classmethod
+    def _normalize_db_scheme(cls, value: str) -> str:
+        """Normalize hosted-provider DB URLs to the psycopg 3 driver scheme.
+
+        Managed Postgres (Render, Railway, Neon, Supabase, Heroku, …) hands out a
+        bare ``postgres://`` or ``postgresql://`` connection string, but this app
+        talks to the database through psycopg 3, which SQLAlchemy selects only via
+        the explicit ``postgresql+psycopg://`` scheme. Rewrite those two bare
+        schemes so a copy-pasted provider URL works as-is; leave any URL that
+        already names a driver (``postgresql+psycopg``, ``postgresql+asyncpg``, …)
+        or a non-Postgres backend (e.g. ``sqlite://``) untouched. Idempotent.
+        """
+
+        if value.startswith("postgresql+"):
+            return value  # already driver-qualified — nothing to do
+        if value.startswith("postgresql://"):
+            return "postgresql+psycopg://" + value[len("postgresql://") :]
+        if value.startswith("postgres://"):
+            return "postgresql+psycopg://" + value[len("postgres://") :]
+        return value
+
     # --- Data-provider seam ---
     # "mock" -> DEMO / SIMULATED data (default) | "open_meteo" -> real keyless API
     WEATHER_PROVIDER: str = "mock"
@@ -53,8 +76,9 @@ class Settings(BaseSettings):
     MEDIA_URL_PREFIX: str = "/media"
     MAX_UPLOAD_BYTES: int = 8 * 1024 * 1024  # 8 MB hard cap on uploads (§14)
 
-    # --- CORS (frontend dev-server origins) ---
+    # --- CORS (frontend origins allowed to call this API) ---
     # The React/Vite dashboard runs on a separate origin in dev and calls this API.
+    # In production, override with the deployed frontend origin(s).
     CORS_ORIGINS: list[str] = [
         "http://localhost:5173",
         "http://127.0.0.1:5173",

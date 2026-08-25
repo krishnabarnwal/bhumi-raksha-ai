@@ -1,4 +1,6 @@
 import type { RiskResult } from "../types";
+import { useT } from "../i18n";
+import type { TranslationKey } from "../i18n";
 
 interface Props {
   risk: RiskResult | null;
@@ -19,22 +21,20 @@ const IMPACT_COLOR: Record<string, string> = {
 };
 
 export default function RiskPanel({ risk, loading }: Props) {
+  const { t } = useT();
   if (loading) {
     return (
       <div className="panel risk-panel">
-        <div className="panel-title">Risk intelligence</div>
-        <div className="empty">Computing…</div>
+        <div className="panel-title">{t("risk.title")}</div>
+        <div className="empty">{t("risk.computing")}</div>
       </div>
     );
   }
   if (!risk) {
     return (
       <div className="panel risk-panel">
-        <div className="panel-title">Risk intelligence</div>
-        <div className="empty">
-          Select a zone on the map to see its risk score, contributing factors
-          and recommended action.
-        </div>
+        <div className="panel-title">{t("risk.title")}</div>
+        <div className="empty">{t("risk.empty")}</div>
       </div>
     );
   }
@@ -57,7 +57,7 @@ export default function RiskPanel({ risk, loading }: Props) {
   return (
     <div className="panel risk-panel">
       <div className="panel-title">
-        Risk intelligence
+        {t("risk.title")}
         {risk.is_simulated && <span className="badge-sim">DEMO / SIMULATED</span>}
       </div>
 
@@ -73,21 +73,23 @@ export default function RiskPanel({ risk, loading }: Props) {
             {risk.display_level}
           </div>
           <div className="confidence">
-            Confidence <strong>{confidencePct}%</strong>
+            {t("risk.confidence")} <strong>{confidencePct}%</strong>
           </div>
           {risk.scenario && (
-            <div className="scenario-tag">scenario: {risk.scenario}</div>
+            <div className="scenario-tag">
+              {t("risk.scenarioTag", { scenario: t(`scenario.${risk.scenario}` as TranslationKey) })}
+            </div>
           )}
           {computedLabel && (
             <div className="computed-at" title={computedAt!.toLocaleString()}>
-              Computed {computedLabel}
+              {t("risk.computed", { time: computedLabel })}
             </div>
           )}
         </div>
       </div>
 
       <div className="factors">
-        <div className="factors-title">Contributing factors</div>
+        <div className="factors-title">{t("risk.factorsTitle")}</div>
         {risk.factors.map((f) => (
           <div className="factor" key={f.key}>
             <div className="factor-row">
@@ -111,16 +113,16 @@ export default function RiskPanel({ risk, loading }: Props) {
                 className="impact-chip"
                 style={{ color: IMPACT_COLOR[f.impact] ?? "#607d8b" }}
               >
-                {f.impact} impact
+                {t("risk.impact", { impact: f.impact })}
               </span>
-              <span className="factor-weight">weight {f.weight}</span>
+              <span className="factor-weight">{t("risk.weight", { weight: f.weight })}</span>
             </div>
           </div>
         ))}
       </div>
 
       <div className="recommended">
-        <div className="recommended-title">Recommended action</div>
+        <div className="recommended-title">{t("risk.recommendedTitle")}</div>
         <div className="recommended-body">{risk.recommended_action}</div>
       </div>
 

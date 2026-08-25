@@ -291,8 +291,21 @@ export default function MapView(props: MapViewProps) {
             "P4", "#2e7d32",
             "#607d8b",
           ],
-          "circle-stroke-color": "#ffffff",
+          // Resolved incidents are dimmed and their ring greyed, so the Command
+          // Center can tell closed incidents from active ones at a glance.
+          "circle-stroke-color": [
+            "match",
+            ["get", "responder_status"],
+            "RESOLVED", "#9e9e9e",
+            "#ffffff",
+          ],
           "circle-stroke-width": 2.5,
+          "circle-opacity": [
+            "match",
+            ["get", "responder_status"],
+            "RESOLVED", 0.45,
+            1,
+          ],
         },
       });
       map.addLayer({

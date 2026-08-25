@@ -5,14 +5,20 @@ import RiskPanel from "./components/RiskPanel";
 import AlertsPanel from "./components/AlertsPanel";
 import PriorityList from "./components/PriorityList";
 import ReportForm from "./components/ReportForm";
+import CommandMetrics from "./components/CommandMetrics";
+import IncidentQueue from "./components/IncidentQueue";
 import SosPanel from "./components/SosPanel";
 import CitizenApp from "./components/CitizenApp";
+import LanguageSwitcher from "./components/LanguageSwitcher";
+import ThemeSwitcher from "./components/ThemeSwitcher";
+import { useT } from "./i18n";
 import { api } from "./api";
 import type {
   Alert,
   Feature,
   FeatureCollection,
   Priority,
+  ResponderStatus,
   ResponseResource,
   RiskResult,
   Scenario,
@@ -30,6 +36,7 @@ const LEGEND: { label: string; color: string }[] = [
 type View = "command" | "citizen";
 
 export default function App() {
+  const { t } = useT();
   const [view, setView] = useState<View>("command");
 
   const [zones, setZones] = useState<FeatureCollection | null>(null);
@@ -58,6 +65,8 @@ export default function App() {
   const [selectedSosId, setSelectedSosId] = useState<number | null>(null);
   const [resources, setResources] = useState<ResponseResource[]>([]);
   const [assigning, setAssigning] = useState(false);
+  const [advancing, setAdvancing] = useState(false);
+  const [escalating, setEscalating] = useState(false);
   // Read the live scenario inside the interval without re-arming it each change.
   const scenarioRef = useRef(scenario);
   scenarioRef.current = scenario;
@@ -184,6 +193,58 @@ export default function App() {
     }
   }
 
+  // Advance an assigned incident along the responder lifecycle. The PATCH hits
+  // the real backend (which validates the transition and stamps the timestamp);
+  // we splice its returned feature into the live feed so the panel/map update
+  // immediately, and the 5s poll keeps confirming it from the server.
+  async function advanceSos(id: number, target: ResponderStatus, responderId: string) {
+    setAdvancing(true);
+    setError(null);
+    try {
+      const updated = await api.updateSosStatus(id, target, responderId);
+      setSos((prev) =>
+        prev
+          ? {
+              ...prev,
+              features: prev.features.map((f) =>
+                f.properties.id === id ? updated : f,
+              ),
+            }
+          : prev,
+      );
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setAdvancing(false);
+    }
+  }
+
+  // Escalate an incident to the recommended response network. The POST hits the
+  // real backend (which recomputes the response category server-side and records
+  // a DEMO/SIMULATED dispatch); we splice the returned feature into the live feed
+  // so the panel updates immediately, and the 5s poll keeps confirming it.
+  async function escalateSos(id: number) {
+    setEscalating(true);
+    setError(null);
+    try {
+      const updated = await api.escalateSos(id);
+      setSos((prev) =>
+        prev
+          ? {
+              ...prev,
+              features: prev.features.map((f) =>
+                f.properties.id === id ? updated : f,
+              ),
+            }
+          : prev,
+      );
+    } catch (e) {
+      setError(errMsg(e));
+    } finally {
+      setEscalating(false);
+    }
+  }
+
   function switchView(v: View) {
     setView(v);
     if (v === "command") refreshSos();
@@ -214,9 +275,20 @@ export default function App() {
     : null;
 
   // SosCollection is structurally a FeatureCollection; the map reads id/priority
-  // from feature properties at runtime.
+  // from feature properties at runtime. We also surface a top-level
+  // `responder_status` (from the assignment) so the map can visually distinguish
+  // lifecycle state — resolved incidents are dimmed on the map.
   const sosGeo: FeatureCollection | null = sos
-    ? { type: "FeatureCollection", features: sos.features as unknown as Feature[] }
+    ? {
+        type: "FeatureCollection",
+        features: sos.features.map((f) => ({
+          ...f,
+          properties: {
+            ...f.properties,
+            responder_status: f.properties.assignment?.status ?? "PENDING",
+          },
+        })) as unknown as Feature[],
+      }
     : null;
 
   const selectedSos =
@@ -230,7 +302,7 @@ export default function App() {
           <h1>
             Bhumi-Raksha <span className="ai">AI</span>
           </h1>
-          <span className="tagline">Predict · Protect · Prevent</span>
+          <span className="tagline">{t("app.tagline")}</span>
         </div>
         <div className="header-center">
           <div className="view-toggle">
@@ -238,13 +310,13 @@ export default function App() {
               className={view === "command" ? "active" : ""}
               onClick={() => switchView("command")}
             >
-              Command Center
+              {t("nav.command")}
             </button>
             <button
               className={view === "citizen" ? "active" : ""}
               onClick={() => switchView("citizen")}
             >
-              Citizen App
+              {t("nav.citizen")}
             </button>
           </div>
         </div>
@@ -259,6 +331,8 @@ export default function App() {
               ))}
             </div>
           )}
+          <ThemeSwitcher />
+          <LanguageSwitcher />
           <span className="badge-sim header-badge">DEMO / SIMULATED DATA</span>
         </div>
       </header>
@@ -274,6 +348,12 @@ export default function App() {
       ) : (
         <div className="workspace">
           <aside className="sidebar sidebar-left">
+            <CommandMetrics sos={sos} />
+            <IncidentQueue
+              sos={sos}
+              selectedSosId={selectedSosId}
+              onSelect={selectSos}
+            />
             <ScenarioControl scenario={scenario} onChange={changeScenario} busy={busy} />
             <AlertsPanel
               alerts={alerts}
@@ -307,11 +387,11 @@ export default function App() {
               onPickLocation={pickLocation}
             />
             {locating && (
-              <div className="map-hint">Click the map to set the report location</div>
+              <div className="map-hint">{t("map.pickLocation")}</div>
             )}
             {sosCount > 0 && (
               <div className="sos-count-badge">
-                🚨 {sosCount} active SOS
+                🚨 {t("map.activeSos", { count: sosCount })}
               </div>
             )}
           </main>
@@ -321,7 +401,11 @@ export default function App() {
               sos={selectedSos}
               resources={resources}
               assigning={assigning}
+              advancing={advancing}
+              escalating={escalating}
               onAssign={assignSos}
+              onAdvance={advanceSos}
+              onEscalate={escalateSos}
             />
             <RiskPanel risk={risk} loading={riskLoading} />
             <ReportForm
