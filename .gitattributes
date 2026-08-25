@@ -2,6 +2,11 @@
 # Fixes the "LF will be replaced by CRLF" warnings on Windows.
 * text=auto eol=lf
 
+# Shell scripts MUST stay LF: a CRLF shebang breaks `#!/bin/sh` on Linux
+# (Docker / Render) and causes exec failures (126/127). Explicit for clarity
+# even though the wildcard above already forces LF.
+*.sh text eol=lf
+
 # Explicit binary types (never normalise / diff as text)
 *.png binary
 *.jpg binary

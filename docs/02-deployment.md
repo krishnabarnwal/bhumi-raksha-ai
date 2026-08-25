@@ -72,11 +72,11 @@ Template: [`.env.example`](../.env.example) (root).
 ## 4. Backend deploy
 
 - **Install:** `pip install .` from `backend/` — or build `backend/Dockerfile`.
-- **Start:**
+- **Start:** the image entrypoint [`backend/start.sh`](../backend/start.sh) applies migrations, runs the two idempotent seeds, then `exec`s uvicorn:
   ```bash
-  uvicorn app.main:app --host 0.0.0.0 --port $PORT
+  uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}
   ```
-  The Docker image already does this (defaulting to 8000 when `$PORT` is unset).
+  It binds `$PORT` when the platform injects one (defaulting to 10000). The Dockerfile `CMD` **is** the script (executable, LF shebang), so no start command / shell wrapper is required — this avoids the literal-vs-shell exec pitfall (exit 127). `docker-compose` overrides the `CMD` with its own `command:` for local dev.
 - **Set:** `DATABASE_URL`, `CORS_ORIGINS` (see §2).
 - **Health checks:** `GET /health` (liveness → `{"status":"ok"}`) and `GET /health/ready` (checks the DB → `503` if unreachable). Point the platform's health check at `/health/ready`.
 
@@ -99,7 +99,7 @@ No platform is currently committed in the repo, so pick the fastest reliable opt
 
 ### Option A — Render (recommended: one platform for all three)
 - **Database:** Render PostgreSQL. PostGIS is enabled by the migration's `CREATE EXTENSION`.
-- **Backend:** Render **Web Service** from `backend/Dockerfile` (or Python env), start `uvicorn app.main:app --host 0.0.0.0 --port $PORT`, health-check path `/health/ready`.
+- **Backend:** Render **Web Service** from `backend/Dockerfile`. The image entrypoint (`backend/start.sh`) migrates + seeds (both idempotent) then serves `uvicorn app.main:app --host 0.0.0.0 --port $PORT`; health-check path `/health/ready`.
 - **Frontend:** Render **Static Site**, build `npm ci && npm run build`, publish `frontend/dist`.
 
 A ready-to-use [`render.yaml`](../render.yaml) blueprint is committed at the repo root — in Render, **New → Blueprint → connect this repo → Apply**. It provisions the database, backend (self-migrating + self-seeding on boot), and static frontend. Outline:
@@ -121,8 +121,10 @@ services:
     plan: free
     region: singapore
     healthCheckPath: /health/ready
-    # migrate + seed (idempotent) then serve — no shell needed on free tier
-    dockerCommand: 'sh -c "alembic upgrade head && python -m app.seed.seed_sikkim && python -m app.seed.demo_incidents && uvicorn app.main:app --host 0.0.0.0 --port $PORT"'
+    # Startup (migrate + seed + uvicorn) is the image entrypoint backend/start.sh
+    # run by the Dockerfile CMD — no dockerCommand here. Render would treat a
+    # dockerCommand string as a single literal executable (not a shell line),
+    # which is what caused the earlier exit 127.
     envVars:
       - key: DATABASE_URL
         fromDatabase: { name: bhumi-raksha-db, property: connectionString }

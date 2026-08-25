@@ -35,9 +35,12 @@ services:
     plan: free
     region: singapore
     healthCheckPath: /health/ready
-    # Migrate + seed (both idempotent) then serve. Keeps the Dockerfile pristine
-    # and needs no shell / pre-deploy step, so it works on the free tier.
-    dockerCommand: 'sh -c "alembic upgrade head && python -m app.seed.seed_sikkim && python -m app.seed.demo_incidents && uvicorn app.main:app --host 0.0.0.0 --port $PORT"'
+    # Startup (migrate + seed, both idempotent, then uvicorn) is baked into the
+    # image entrypoint — backend/start.sh, run by the Dockerfile CMD. We do NOT
+    # set dockerCommand here: Render would treat that string as a single literal
+    # executable instead of running it through a shell, which is exactly what
+    # caused the earlier exit 127. Letting the image CMD run is the production-
+    # safe fix. start.sh binds Render's injected $PORT (defaulting to 10000).
     envVars:
       - key: DATABASE_URL
         fromDatabase:

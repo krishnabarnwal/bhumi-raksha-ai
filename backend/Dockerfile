@@ -18,12 +18,17 @@ RUN pip install --upgrade pip && pip install .
 COPY backend/alembic ./alembic
 COPY backend/alembic.ini ./alembic.ini
 
-EXPOSE 8000
+# Runtime entrypoint: migrate + seed (both idempotent) then exec uvicorn.
+# Baked into the image and marked executable so the platform can run it
+# directly — no start command / shell parsing needed (a literal-vs-shell
+# mismatch on the start command is what caused the earlier exit 127). `sed`
+# strips any stray CR so the `#!/bin/sh` shebang stays valid on Linux
+# (.gitattributes already forces LF; this is belt-and-suspenders). The script
+# honours $PORT when the platform injects one, defaulting to 10000. compose
+# overrides this CMD with its own `command:`, so local dev is unaffected.
+COPY backend/start.sh ./start.sh
+RUN sed -i 's/\r$//' ./start.sh && chmod +x ./start.sh
 
-# Migrations are applied explicitly (see README / docs/02-deployment.md), e.g.:
-#   docker compose ... exec api alembic upgrade head
-#
-# The server honours $PORT when the platform injects one (Render, Railway,
-# Cloud Run, …), defaulting to 8000 for local / docker-compose use. compose
-# overrides this CMD with its own `command:`, so it is unaffected.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+EXPOSE 10000
+
+CMD ["/app/start.sh"]
